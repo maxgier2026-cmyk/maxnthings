@@ -47,12 +47,22 @@ scene.fog = new THREE.Fog(0x8fc7ff, 60, 220);
 const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 500);
 const renderer = new THREE.WebGLRenderer({antialias:true});
 renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.1);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-sun.position.set(80,120,40);
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(80,140,40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left = -100;
+sun.shadow.camera.right = 100;
+sun.shadow.camera.top = 100;
+sun.shadow.camera.bottom = -100;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 300;
 scene.add(sun);
 
 /* ---------- voxel world ---------- */
@@ -71,6 +81,72 @@ const COLORS = {
   13:0x4fd1ff, 14:0xe6c200, 15:0x9c2b2b, 16:0x1f6b3a, 17:0xd4b106, 18:0x274690,
   19:0x3a2a1d, 20:0xa97c50
 };
+
+/* ---------- procedural textures ---------- */
+function makeTexture(draw){
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const ctx = c.getContext('2d');
+  draw(ctx);
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  return tex;
+}
+function noiseFill(ctx, base, variance){
+  for(let x=0;x<32;x++)for(let y=0;y<32;y++){
+    const v = (Math.random()-0.5)*variance;
+    const [r,g,b] = base;
+    ctx.fillStyle = `rgb(${Math.min(255,Math.max(0,r+v))},${Math.min(255,Math.max(0,g+v))},${Math.min(255,Math.max(0,b+v))})`;
+    ctx.fillRect(x,y,1,1);
+  }
+}
+const TEXTURES = {
+  3: makeTexture(ctx=>{ // stone brick
+    noiseFill(ctx,[140,140,145],14);
+    ctx.strokeStyle='rgba(60,60,65,0.6)'; ctx.lineWidth=1;
+    for(let y=0;y<32;y+=8){ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(32,y);ctx.stroke(); }
+    for(let y=0;y<32;y+=8){
+      const off=(y/8)%2===0?0:8;
+      for(let x=off;x<32;x+=16){ ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+8);ctx.stroke(); }
+    }
+  }),
+  9: makeTexture(ctx=>{ // red brick
+    noiseFill(ctx,[150,80,60],10);
+    ctx.strokeStyle='rgba(80,50,40,0.7)'; ctx.lineWidth=1;
+    for(let y=0;y<32;y+=6){ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(32,y);ctx.stroke(); }
+    for(let y=0;y<32;y+=6){
+      const off=(y/6)%2===0?0:6;
+      for(let x=off;x<32;x+=12){ ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+6);ctx.stroke(); }
+    }
+  }),
+  10: makeTexture(ctx=>{ // dark slate roof
+    noiseFill(ctx,[55,40,40],8);
+    ctx.strokeStyle='rgba(20,15,15,0.7)';
+    for(let y=0;y<32;y+=5){ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(32,y);ctx.stroke(); }
+  }),
+  1: makeTexture(ctx=>{ noiseFill(ctx,[80,160,60],18); }), // grass
+  2: makeTexture(ctx=>{ noiseFill(ctx,[110,75,45],14); }), // dirt
+  5: makeTexture(ctx=>{ noiseFill(ctx,[222,210,140],10); }), // sand
+  6: makeTexture(ctx=>{ // wood
+    noiseFill(ctx,[120,85,55],10);
+    ctx.strokeStyle='rgba(70,45,25,0.5)';
+    for(let x=4;x<32;x+=6){ ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,32);ctx.stroke(); }
+  }),
+  19: makeTexture(ctx=>{ noiseFill(ctx,[55,38,26],8); }), // dark wood
+  20: makeTexture(ctx=>{ // plank
+    noiseFill(ctx,[165,120,75],8);
+    ctx.strokeStyle='rgba(90,60,35,0.6)';
+    for(let y=4;y<32;y+=6){ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(32,y);ctx.stroke(); }
+  }),
+  7: makeTexture(ctx=>{ noiseFill(ctx,[40,110,45],16); }), // leaves
+  8: makeTexture(ctx=>{ noiseFill(ctx,[180,165,125],10); }), // path
+  11: makeTexture(ctx=>{ // glass with frame
+    ctx.fillStyle='rgba(180,220,255,0.5)'; ctx.fillRect(0,0,32,32);
+    ctx.strokeStyle='rgba(255,255,255,0.8)'; ctx.lineWidth=3; ctx.strokeRect(1,1,30,30);
+  }),
+};
+function texFor(id){ return TEXTURES[id] || null; }
 
 const world = new Map(); // "x,y,z" -> blockId
 function key(x,y,z){return x+','+y+','+z;}
@@ -150,7 +226,16 @@ function box(x0,y0,z0,x1,y1,z1,id,hollow=false){
     setBlock(x,y,z,id);
   }
 }
-function tower(cx,y0,cz,radius,h,id,roofId){
+function crenellate(cx,cz,radius,y,id){
+  for(let a=0;a<32;a+=2){
+    const ang=a/32*Math.PI*2;
+    const x=Math.round(cx+Math.cos(ang)*radius);
+    const z=Math.round(cz+Math.sin(ang)*radius);
+    setBlock(x,y,z,id);
+  }
+}
+function tower(cx,y0,cz,radius,h,id,roofId,coneHeight=null){
+  const cone = coneHeight ?? radius+3;
   for(let y=y0;y<y0+h;y++){
     for(let a=0;a<32;a++){
       const ang=a/32*Math.PI*2;
@@ -159,45 +244,84 @@ function tower(cx,y0,cz,radius,h,id,roofId){
       setBlock(x,y,z,id);
     }
   }
-  // conical roof
-  for(let i=0;i<=radius+2;i++){
-    const r=radius+2-i;
+  // crenellations (battlements) on top rim
+  crenellate(cx,cz,radius,y0+h,id);
+  // narrow window slits
+  for(let y=y0+3;y<y0+h-3;y+=4){
+    [0, Math.PI/2, Math.PI, 3*Math.PI/2].forEach(ang=>{
+      const x=Math.round(cx+Math.cos(ang)*radius);
+      const z=Math.round(cz+Math.sin(ang)*radius);
+      setBlock(x,y,z,BLOCKS.GLASS);
+    });
+  }
+  // tall conical roof
+  for(let i=0;i<=cone;i++){
+    const r=Math.max(0,radius+2-(i*(radius+2)/cone));
     for(let a=0;a<32;a++){
       const ang=a/32*Math.PI*2;
       const x=Math.round(cx+Math.cos(ang)*r);
       const z=Math.round(cz+Math.sin(ang)*r);
-      setBlock(x,y0+h+i,z,roofId);
+      setBlock(x,y0+h+1+i,z,roofId);
     }
   }
+}
+function gatehouseArch(x0,y0,z,x1,h,id){
+  // two posts + arched lintel
+  box(x0,y0,z,x0,y0+h,z,id);
+  box(x1,y0,z,x1,y0+h,z,id);
+  for(let x=x0;x<=x1;x++) setBlock(x,y0+h+1,z,id);
+  setBlock((x0+x1)>>1, y0+h+2, z, id);
 }
 
 function buildCastle(){
   const gx=CASTLE.x, gz=CASTLE.z, base=baseHeight(gx,gz);
-  // main keep
-  box(gx-14, base, gz-14, gx+14, base+10, gz+14, BLOCKS.STONE, true);
-  // great hall floor + windows
-  box(gx-12, base, gz-12, gx+12, base, gz+12, BLOCKS.PATH);
-  for(let x=gx-12;x<=gx+12;x+=4) setBlock(x, base+5, gz-14, BLOCKS.GLASS);
-  // floating candle effect: small floating gold blocks
-  for(let i=0;i<10;i++){
-    const x=gx-8+Math.floor(Math.random()*16);
-    const z=gz-8+Math.floor(Math.random()*16);
-    setBlock(x, base+8, z, BLOCKS.GOLD);
+
+  // central great hall block - taller, peaked roof, asymmetric footprint
+  box(gx-9, base, gz-7, gx+9, base+11, gz+7, BLOCKS.STONE, true);
+  box(gx-9, base, gz-7, gx+9, base, gz+7, BLOCKS.PATH);
+  crenellate(gx, gz, 11, base+11, BLOCKS.STONE);
+  // peaked roof over great hall (ridge along x-axis)
+  for(let i=0;i<=7;i++){
+    const z0=gz-7+i, z1=gz+7-i;
+    box(gx-9, base+12+i, z0, gx+9, base+12+i, z0, BLOCKS.ROOF);
+    box(gx-9, base+12+i, z1, gx+9, base+12+i, z1, BLOCKS.ROOF);
   }
-  // towers at corners (Gryffindor / Astronomy etc)
-  tower(gx-14, base, gz-14, 3, 16, BLOCKS.STONE, BLOCKS.ROOF);
-  tower(gx+14, base, gz-14, 3, 20, BLOCKS.STONE, BLOCKS.ROOF); // astronomy tower tallest
-  tower(gx-14, base, gz+14, 3, 14, BLOCKS.STONE, BLOCKS.ROOF);
-  tower(gx+14, base, gz+14, 3, 14, BLOCKS.STONE, BLOCKS.ROOF);
-  // viaduct bridge heading toward village
+  // tall arched windows along the hall sides
+  for(let x=gx-7;x<=gx+7;x+=3){
+    box(x,base+3,gz-7,x,base+7,gz-7,BLOCKS.GLASS);
+    box(x,base+3,gz+7,x,base+7,gz+7,BLOCKS.GLASS);
+  }
+  // floating candles inside great hall
+  for(let i=0;i<14;i++){
+    const x=gx-7+Math.floor(Math.random()*14);
+    const z=gz-5+Math.floor(Math.random()*10);
+    setBlock(x, base+9, z, BLOCKS.GOLD);
+  }
+
+  // entrance wing extending toward courtyard (south), narrower & lower
+  box(gx-4, base, gz-13, gx+4, base+7, gz-7, BLOCKS.STONE, true);
+  for(let i=0;i<=4;i++){
+    box(gx-4, base+8+i, gz-13+i, gx+4, base+8+i, gz-13+i, BLOCKS.ROOF);
+  }
+  gatehouseArch(gx-3, base, gz-13, gx+3, 5, BLOCKS.STONE);
+  box(gx-1, base, gz-13, gx+1, base+4, gz-13, BLOCKS.AIR); // open doorway
+
+  // asymmetric towers - varied radius/height/placement (not a symmetric box)
+  tower(gx-11, base, gz-9,  3, 15, BLOCKS.STONE, BLOCKS.ROOF);            // west wing tower
+  tower(gx+12, base, gz-4,  4, 24, BLOCKS.STONE, BLOCKS.ROOF, 10);        // Astronomy Tower - tallest, offset
+  tower(gx-13, base, gz+9,  2, 12, BLOCKS.STONE, BLOCKS.ROOF);            // small corner turret
+  tower(gx+9,  base, gz+10, 3, 18, BLOCKS.STONE, BLOCKS.ROOF);            // Gryffindor-style tower
+  tower(gx-2,  base, gz-15, 2, 10, BLOCKS.STONE, BLOCKS.ROOF);            // gate flanking turret
+
+  // viaduct bridge with arches, heading toward the village
   for(let i=0;i<26;i++){
-    const x=gx+14+i, z=gz;
-    const h=base+3;
-    box(x,base,z-1,x,h,z+1,BLOCKS.STONE);
+    const x=gx+16+i, z=gz-4;
+    const h=base+5;
+    box(x,base,z-1,x,base+1,z+1,BLOCKS.STONE); // pier base
+    box(x,h-1,z-1,x,h,z+1,BLOCKS.STONE);       // deck
+    if(i%6<5) box(x,base+2,z-1,x,h-2,z+1,BLOCKS.AIR); // arch opening
     setBlock(x,h+1,z,BLOCKS.PATH);
   }
-  // courtyard gate
-  box(gx-2, base, gz-15, gx+2, base+4, gz-15, BLOCKS.AIR);
 }
 
 function buildVillage(){
@@ -276,12 +400,17 @@ function rebuildMeshes(){
   }
   for(const id in buckets){
     const arr = buckets[id];
-    const mat = new THREE.MeshLambertMaterial({
-      color: COLORS[id]||0xffffff,
+    const tex = texFor(+id);
+    const matOpts = {
       transparent: +id===BLOCKS.WATER||+id===BLOCKS.GLASS,
-      opacity: (+id===BLOCKS.WATER)?0.6:((+id===BLOCKS.GLASS)?0.4:1)
-    });
+      opacity: (+id===BLOCKS.WATER)?0.6:((+id===BLOCKS.GLASS)?0.5:1)
+    };
+    if(tex){ matOpts.map = tex; matOpts.color = COLORS[id]; }
+    else matOpts.color = COLORS[id]||0xffffff;
+    const mat = new THREE.MeshLambertMaterial(matOpts);
     const inst = new THREE.InstancedMesh(geometry, mat, arr.length);
+    inst.castShadow = true;
+    inst.receiveShadow = true;
     const m = new THREE.Matrix4();
     arr.forEach((k,i)=>{
       const [x,y,z] = k.split(',').map(Number);
